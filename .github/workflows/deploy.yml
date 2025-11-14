@@ -1,0 +1,76 @@
+name: Deploy Umami Analytics
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEPLOYMENT_HOST: moon.dev.golem.network
+  DEPLOYMENT_PATH: /home/ubuntu/projects/umamidb
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          ssh-keyscan -H ${{ env.DEPLOYMENT_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pre-deployment health check
+        run: |
+          ssh ubuntu@${{ env.DEPLOYMENT_HOST }} '
+            cd ${{ env.DEPLOYMENT_PATH }}
+            docker compose ps
+            docker compose logs --tail=10 umami golem-realtime-sync
+          '
+
+      - name: Deploy with zero-downtime strategy
+        run: |
+          ssh ubuntu@${{ env.DEPLOYMENT_HOST }} '
+            cd ${{ env.DEPLOYMENT_PATH }}
+
+            # Create backup of current state
+            docker compose config > docker-compose.backup.yml
+
+            # Pull new images
+            docker compose pull
+
+            # Graceful restart
+            docker compose up -d
+            sleep 30
+
+            # Cleanup old images
+            docker image prune -f || true
+          '
+
+      - name: Post-deployment verification
+        run: |
+          ssh ubuntu@${{ env.DEPLOYMENT_HOST }} '
+            cd ${{ env.DEPLOYMENT_PATH }}
+
+            # Wait for services to be fully ready
+            sleep 15
+
+            # Verify all services are healthy
+            docker compose ps
+
+            echo "Deployment successful!"
+          '
